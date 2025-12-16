@@ -1,9 +1,9 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import torch
 from transformers import AutoModelForCausalLM
-from src.models.mar.mar import mar_huge
+from src.models.mar.mar_p import mar_huge
 from src.models.mar.vae import AutoencoderKL
-from src.models.harmon import Harmon
+from src.models.harmon_p_gpt import Harmon
 from xtuner.utils import PROMPT_TEMPLATE
 from transformers import AutoTokenizer
 

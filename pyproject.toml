@@ -1,0 +1,18 @@
+[project]
+name = "harmon-pano"
+version = "0.1.0"
+description = "HARMON + pano AR experiments"
+requires-python = ">=3.10"
+
+dependencies = [
+  "torch==2.2.0",
+  "torchvision==0.17.0",
+  "mmengine",
+  "transformers==4.45.2",
+  "timm==0.9.12",
+  "einops",
+  "scipy",
+  "numpy<2",
+  "xtuner>=0.1.23",
+  "accelerate>=1.12.0",
+]
