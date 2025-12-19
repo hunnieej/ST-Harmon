@@ -116,7 +116,14 @@ work_dirs/
 Tests/
 .python-version
 prompt.txt
+prompt_template.txt
+prompts.txt
+prompts_100.txt
+make_gallery.py
+swap_LR.py
 test.sh
+test_cylinder.sh
+test100.sh
 __pycache__/
 *.py[cod]
 

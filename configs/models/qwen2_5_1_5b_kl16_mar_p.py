@@ -3,7 +3,7 @@ import torch
 from transformers import AutoModelForCausalLM
 from src.models.mar.mar_p import mar_huge
 from src.models.mar.vae import AutoencoderKL
-from src.models.harmon_p_gpt import Harmon
+from src.models.harmon_p_v2 import Harmon
 from xtuner.utils import PROMPT_TEMPLATE
 from transformers import AutoTokenizer
 
