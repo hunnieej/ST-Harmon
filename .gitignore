@@ -124,6 +124,7 @@ swap_LR.py
 test.sh
 test_cylinder.sh
 test100.sh
+viwer.py
 __pycache__/
 *.py[cod]
 
