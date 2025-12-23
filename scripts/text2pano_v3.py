@@ -1,16 +1,5 @@
 """
-scripts.text2pano_v2_5
-251218ver (cyl-yaw inverse-writer)
-
-Goal:
-- Global latent is defined on the cylinder surface (unwrapped ERP grid: m x n).
-- We render/generate tangent views (tiles) at different yaw centers (theta0[t]).
-- Each step:
-    global -> per-tile gather (view tokens)
-    per-tile one-step unmasking (MAR step, externally controlled mask)
-    merge back to global (SSOT writer per global cell)
-- Y axis is fixed (row-wise identity): tile covers full cylinder height.
-  This matches the "Y is fixed so full vertical extent is always included" requirement.
+Date : 2025-12-22
 """
 
 import argparse
@@ -22,8 +11,17 @@ from PIL import Image
 from tqdm import tqdm
 from src.builder import BUILDER
 import yaml
-from scripts.main_functions import precompute_cyl_yaw_inverse_writer
-from scripts.main_functions import save_tensor_image, expand_cfg_batch, make_global_perm, mask_from_perm_keep_last
+from scripts.coor_functions import precompute_cyl_yaw_inverse_writer
+from scripts.importance_functions import (compute_global_cfg_importance_map,
+                                          make_global_perm_from_score_masked, 
+                                          save_importance_heatmap, 
+                                          save_rank_map, 
+                                          save_step_pred_mask,
+                                          step_importance_curve)
+from scripts.main_functions import (save_tensor_image, 
+                                    expand_cfg_batch, 
+                                    make_global_perm, 
+                                    mask_from_perm_keep_last)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -42,7 +40,11 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="output.jpg")
     parser.add_argument("--num_tiles", type=int, default=9)
     parser.add_argument("--fov_x_deg", type=float, default=80.0)
-
+    parser.add_argument("--fov_y_deg", type=float, default=80.0)
+    parser.add_argument("--save_steps", default="True", help="whether to save intermediate steps.")
+    parser.add_argument("--importance", default="True", help="whether to use importance-based permutation.")
+    parser.add_argument("--step_importance_mode", type=str, default="l2", choices=["l1","l2","linf","cos","rel_l2","rel_l1","dot"], help="mode for step-wise importance adjustment.")
+    parser.add_argument("--step_importance_reduce", type=str, default="mean", choices=["mean", "median", "max"], help="reduction method for step-wise importance adjustment.")
     args = parser.parse_args()
     torch.set_grad_enabled(False)
 
@@ -82,11 +84,12 @@ if __name__ == "__main__":
     m = (args.image_size * args.height_ratio) // 16
     n = (args.image_size * args.width_ratio) // 16
     L = m * n
-
-    # tile shape: full height, fixed width=512px in tokens
-    tile_m = m
+    delta_max = math.pi / args.num_tiles
+    tile_m = int(math.ceil(m / math.cos(delta_max)))   # e.g., m=32, T=9 -> 34
     tile_n = args.image_size // 16
     M = tile_m * tile_n
+    dummy_orders_tile = torch.zeros(bsz, M, device=device, dtype=torch.long)
+
 
     # ----------------- precompute inverse-writer maps -----------------
     theta0, owner_x, _, read_lin_list, writer_lin_list, writer_pix_list = precompute_cyl_yaw_inverse_writer(
@@ -96,7 +99,7 @@ if __name__ == "__main__":
         tile_n=tile_n,
         num_tiles=args.num_tiles,
         fov_x_deg=args.fov_x_deg,
-        fov_y_deg=args.fov_x_deg,
+        fov_y_deg=args.fov_y_deg,
         device=device,
     )
     print("[OK] Precomputed inverse-writer yaw maps (no missing writers by construction).", flush=True)
@@ -107,7 +110,44 @@ if __name__ == "__main__":
 
     # ----------------- global mask + global perm (SSOT schedule on GLOBAL) -----------------
     global_mask = torch.ones(bsz, m, n, device=device, dtype=model.dtype)  # 1=unknown
-    global_perm = make_global_perm(bsz, L, device=device)
+
+    # ----------------- KV cache (once) -----------------
+    try:
+        past = model.prepare_past_key_values(input_ids=input_ids, attention_mask=attention_mask)
+    except TypeError:
+        past = model.prepare_past_key_values(input_ids=input_ids)
+
+    # A-plan: text-only importance-based permutation
+    if args.importance=="True":
+        importance_map = compute_global_cfg_importance_map(
+            model=model,
+            step=0,
+            num_iter=args.num_iter,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past,
+            global_tokens=global_tokens,
+            global_mask=global_mask,
+            read_lin_list=read_lin_list,
+            writer_lin_list=writer_lin_list,
+            writer_pix_list=writer_pix_list,
+            tile_m=tile_m,
+            tile_n=tile_n,
+            orders_tile=dummy_orders_tile,
+            temperature=args.temperature,
+            device=device,
+            score_mode=args.step_importance_mode,
+            batch_reduce=args.step_importance_reduce,
+        )
+        global_perm = make_global_perm_from_score_masked(
+            score_map=importance_map,
+            global_mask=global_mask,
+            noise_std=0.01,
+        )
+        save_importance_heatmap(importance_map, out_dir / "importance_heatmap.png")
+    else:
+        global_perm = make_global_perm(bsz, L, device=device)
+    save_rank_map(global_perm, m, n, out_dir / "rank_map.png")
 
     # keep cond/uncond aligned
     if args.cfg != 1.0:
@@ -118,24 +158,19 @@ if __name__ == "__main__":
 
     dummy_orders_tile = torch.zeros(bsz, M, device=device, dtype=torch.long)
 
-    # ----------------- KV cache (once) -----------------
-    try:
-        past = model.prepare_past_key_values(input_ids=input_ids, attention_mask=attention_mask)
-    except TypeError:
-        past = model.prepare_past_key_values(input_ids=input_ids)
-
     # ----------------- per step decoding -----------------
-    stem = out_path.stem
-    steps_dir = out_dir / "steps"
-    steps_dir.mkdir(parents=True, exist_ok=True)
-
     @torch.inference_mode()
     def decode_and_save_step(step_idx: int, tokens_4d: torch.Tensor):
         tok = tokens_4d[:1].detach().contiguous().clone()
         img = model.decode(tok)  # (1, 3, Hpx, Wpx)
         img = torch.nan_to_num(img, nan=-1.0, posinf=1.0, neginf=-1.0)
         save_tensor_image(img[0], steps_dir / f"step{step_idx:02d}.png")
-    decode_and_save_step(0, global_tokens)
+    
+    if args.save_steps=="True":
+        stem = out_path.stem
+        steps_dir = out_dir / "steps"
+        steps_dir.mkdir(parents=True, exist_ok=True)
+        decode_and_save_step(0, global_tokens)
 
     # ----------------- global-step loop -----------------
     for step in tqdm(range(args.num_iter), desc="Global-step", disable=False):
@@ -154,10 +189,8 @@ if __name__ == "__main__":
         else:
             mask_ratio = math.cos(math.pi / 2.0 * (step + 1) / args.num_iter)
             target_len = int(math.floor(L * mask_ratio))
-
             unknown0 = int(global_mask_flat[0].sum().item())
             mask_len0 = max(1, min(unknown0 - 1, target_len))
-
             global_mask_next_flat = mask_from_perm_keep_last(global_perm, mask_len0, dtype=model.dtype)
             global_mask_to_pred_flat = (global_mask_flat.bool() ^ global_mask_next_flat.bool())
 
@@ -219,7 +252,6 @@ if __name__ == "__main__":
 
             # merge back ONLY for writer-owned global cells
             tokens_writer = tokens_out_flat[:, pix_write, :]  # (B,K,D)
-
             w = m2p_writer.unsqueeze(-1).to(dtype=model.dtype)  # (B,K,1)
 
             idx_D = lin_write.view(1, K, 1).expand(bsz, K, D)
@@ -238,7 +270,10 @@ if __name__ == "__main__":
         # restore shape + advance global mask
         global_tokens = global_tokens_flat.view(bsz, m, n, D)
         global_mask = global_mask_next_flat.view(bsz, m, n)
-        decode_and_save_step(step + 1, global_tokens)
+        if args.save_steps== "True":
+            save_step_pred_mask(global_mask_to_pred_flat, m, n, steps_dir / f"predmask{step+1:02d}.png")
+            # save_importance_heatmap(importance_map, steps_dir / f"importance{step+1:02d}.png")
+            decode_and_save_step(step + 1, global_tokens)
 
     # ----------------- decode cylinder texture (unwrapped ERP) -----------------
     pano = model.decode(global_tokens)  # (bsz, 3, Hpx, Wpx)

@@ -116,7 +116,7 @@ work_dirs/
 Tests/
 .python-version
 prompt.txt
-prompt_template.txt
+prompts_template.txt
 prompts.txt
 prompts_100.txt
 make_gallery.py
@@ -125,6 +125,7 @@ test.sh
 test_cylinder.sh
 test100.sh
 viwer.py
+npy_comp.py
 __pycache__/
 *.py[cod]
 

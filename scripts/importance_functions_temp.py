@@ -10,60 +10,54 @@ from scripts.main_functions import mask_from_perm_keep_last
 
 @torch.inference_mode()
 def cfg_delta_to_score(
-    cond: torch.Tensor,     # (half, M, D)
-    uncd: torch.Tensor,     # (half, M, D)
+    cond: torch.Tensor,
+    uncd: torch.Tensor,
     *,
     score_mode: str = "l2",     # "l2"|"l1"|"linf"|"cos"|"rel_l2"|"rel_l1"|"dot"
     batch_reduce: str = "mean", # "mean"|"median"|"max"
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """
-    Return:
-      score: (M,) float32
-      - larger => stronger text effect (cond vs uncond difference)
-    """
     if cond.shape != uncd.shape:
         raise ValueError(f"cond/uncd shape mismatch: {cond.shape} vs {uncd.shape}")
     if cond.dim() != 3:
         raise ValueError(f"expected (half,M,D), got {cond.shape}")
 
-    # float32로 안정화
     cond_f = cond.float()
     uncd_f = uncd.float()
     delta = cond_f - uncd_f  # (half,M,D)
 
     if score_mode == "l2":
         # ||delta||_2
-        per = torch.linalg.vector_norm(delta, ord=2, dim=-1)  # (half,M)
+        per = torch.linalg.vector_norm(delta, ord=2, dim=-1)
 
     elif score_mode == "l1":
         # ||delta||_1
-        per = delta.abs().sum(dim=-1)  # (half,M)
+        per = delta.abs().sum(dim=-1)
 
     elif score_mode == "linf":
         # ||delta||_inf
-        per = delta.abs().amax(dim=-1)  # (half,M)
+        per = delta.abs().amax(dim=-1)
 
     elif score_mode == "cos":
         # cosine distance: 1 - cos(cond, uncd)
         # "방향 변화"를 보는 경향(크기 변화는 덜 민감)
-        per = 1.0 - F.cosine_similarity(cond_f, uncd_f, dim=-1, eps=eps)  # (half,M)
+        per = 1.0 - F.cosine_similarity(cond_f, uncd_f, dim=-1, eps=eps)
 
     elif score_mode == "rel_l2":
         # 상대 변화량: ||cond-uncd|| / (||uncd|| + eps)
-        num = torch.linalg.vector_norm(delta, ord=2, dim=-1)  # (half,M)
-        den = torch.linalg.vector_norm(uncd_f, ord=2, dim=-1).clamp_min(eps)  # (half,M)
+        num = torch.linalg.vector_norm(delta, ord=2, dim=-1)
+        den = torch.linalg.vector_norm(uncd_f, ord=2, dim=-1).clamp_min(eps)
         per = num / den
 
     elif score_mode == "rel_l1":
-        num = delta.abs().sum(dim=-1)  # (half,M)
-        den = uncd_f.abs().sum(dim=-1).clamp_min(eps)  # (half,M)
+        num = delta.abs().sum(dim=-1)
+        den = uncd_f.abs().sum(dim=-1).clamp_min(eps)
         per = num / den
 
     elif score_mode == "dot":
         # delta와 uncond의 정렬 정도(변형이 "기존 방향"을 따라가는지)
         # 해석이 까다로워서 보조 실험용 권장
-        per = (delta * uncd_f).sum(dim=-1)  # (half,M)
+        per = (delta * uncd_f).sum(dim=-1)
         per = per.abs()
 
     else:
@@ -88,28 +82,22 @@ def compute_global_cfg_importance_map(
     model,
     step: int,
     num_iter: int,
-    input_ids: torch.Tensor,          # (bsz, T) = [cond...; uncond...]
-    attention_mask: torch.Tensor,     # (bsz, T)
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
     past_key_values,
-    global_tokens: torch.Tensor,      # (bsz, m, n, D)
-    global_mask: torch.Tensor,        # (bsz, m, n) float 0/1 (1 unknown)
+    global_tokens: torch.Tensor,
+    global_mask: torch.Tensor,
     read_lin_list: List[torch.Tensor],
     writer_lin_list: List[torch.Tensor],
     writer_pix_list: List[torch.Tensor],
     tile_m: int,
     tile_n: int,
-    orders_tile: torch.Tensor,        # (bsz, M)
+    orders_tile: torch.Tensor,
     temperature: float,
     device: torch.device,
     score_mode: str ="l2",
     batch_reduce: str ="mean",
 ) -> torch.Tensor:
-    """
-    CFG-delta 기반 global importance map 생성.
-    출력:
-      importance_map: (m, n) float32, [0,1]
-      - 값이 클수록 cond/uncond 차이가 큰 위치(=텍스트 조건 영향이 큰 위치)
-    """
     bsz, m, n, D = global_tokens.shape
     L = m * n
     M = tile_m * tile_n
@@ -260,10 +248,6 @@ def save_importance_heatmap(
 
     npy_path = out_path.with_suffix(".npy")
     np.save(str(npy_path), arr)
-
-    # print(f"[OK] Saved importance heatmap: {out_path}")
-    # print(f"[OK] Saved importance array:   {npy_path}")
-
 
 def save_rank_map(global_perm: torch.Tensor, m: int, n: int, out_png: Path, base_h: float = 6.0):
     """

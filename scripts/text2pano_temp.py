@@ -1,16 +1,7 @@
 """
-scripts.text2pano_v2_5
-251218ver (cyl-yaw inverse-writer)
+Date : 2025-12-23
+Updates
 
-Goal:
-- Global latent is defined on the cylinder surface (unwrapped ERP grid: m x n).
-- We render/generate tangent views (tiles) at different yaw centers (theta0[t]).
-- Each step:
-    global -> per-tile gather (view tokens)
-    per-tile one-step unmasking (MAR step, externally controlled mask)
-    merge back to global (SSOT writer per global cell)
-- Y axis is fixed (row-wise identity): tile covers full cylinder height.
-  This matches the "Y is fixed so full vertical extent is always included" requirement.
 """
 
 import argparse
@@ -22,7 +13,7 @@ from PIL import Image
 from tqdm import tqdm
 from src.builder import BUILDER
 import yaml
-from scripts.coor_functions_temp import precompute_cyl_yaw_inverse_writer
+from scripts.coor_functions import precompute_cyl_yaw_inverse_writer
 from scripts.importance_functions import (compute_global_cfg_importance_map,
                                           make_global_perm_from_score_masked, 
                                           save_importance_heatmap, 
@@ -200,10 +191,8 @@ if __name__ == "__main__":
         else:
             mask_ratio = math.cos(math.pi / 2.0 * (step + 1) / args.num_iter)
             target_len = int(math.floor(L * mask_ratio))
-
             unknown0 = int(global_mask_flat[0].sum().item())
             mask_len0 = max(1, min(unknown0 - 1, target_len))
-
             global_mask_next_flat = mask_from_perm_keep_last(global_perm, mask_len0, dtype=model.dtype)
             global_mask_to_pred_flat = (global_mask_flat.bool() ^ global_mask_next_flat.bool())
 
