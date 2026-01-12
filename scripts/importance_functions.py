@@ -291,36 +291,3 @@ def save_step_pred_mask(mask_to_pred_flat: torch.Tensor, m: int, n: int, out_png
     plt.tight_layout()
     plt.savefig(str(out_png), dpi=200)
     plt.close()
-
-def step_importance_curve(global_perm, importance_map, num_iter, device):
-    # importance (m,n) -> (L,)
-    imp = importance_map[0] if importance_map.dim()==3 else importance_map
-    imp = imp.detach().float().to(device).view(-1)  # (L,)
-
-    perm = global_perm[0].detach().to(device)  # (L,)
-    L = perm.numel()
-
-    # simulate your masking schedule exactly (bsz=1)
-    mask = torch.ones(L, device=device, dtype=torch.float32)  # 1 unknown
-    perm1 = perm.view(1, L)
-
-    means = []
-    for step in range(num_iter):
-        if step >= num_iter - 1:
-            to_pred = mask.bool()
-            next_mask = torch.zeros_like(mask)
-        else:
-            mask_ratio = math.cos(math.pi / 2.0 * (step + 1) / num_iter)
-            target_len = int(math.floor(L * mask_ratio))
-            unknown0 = int(mask.sum().item())
-            mask_len0 = max(1, min(unknown0 - 1, target_len))
-            next_mask = mask_from_perm_keep_last(perm1, mask_len0, dtype=torch.float32)[0]
-            to_pred = (mask.bool() ^ next_mask.bool())
-
-        if to_pred.any():
-            means.append(float(imp[to_pred].mean().item()))
-        else:
-            means.append(float("nan"))
-        mask = next_mask
-
-    return means

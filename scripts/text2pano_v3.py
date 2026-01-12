@@ -11,13 +11,12 @@ from PIL import Image
 from tqdm import tqdm
 from src.builder import BUILDER
 import yaml
-from scripts.coor_functions import precompute_cyl_yaw_inverse_writer
+from scripts.cylindrical_functions import precompute_cyl_yaw_inverse_writer
 from scripts.importance_functions import (compute_global_cfg_importance_map,
                                           make_global_perm_from_score_masked, 
                                           save_importance_heatmap, 
                                           save_rank_map, 
-                                          save_step_pred_mask,
-                                          step_importance_curve)
+                                          save_step_pred_mask)
 from scripts.main_functions import (save_tensor_image, 
                                     expand_cfg_batch, 
                                     make_global_perm, 
