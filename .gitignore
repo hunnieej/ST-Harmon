@@ -122,10 +122,10 @@ prompts_100_v1.txt
 prompts_100_raw.txt
 make_gallery.py
 swap_LR.py
+cyl2erp.py
 test.sh
 test_temp.sh
-viwer.py
-npy_comp.py
+Ours.tar
 __pycache__/
 *.py[cod]
 

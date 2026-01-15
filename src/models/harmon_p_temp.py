@@ -83,7 +83,8 @@ class Harmon(nn.Module):
 
     @torch.no_grad()
     def decode(self, z):
-        z /= self.vae_scale
+        # z /= self.vae_scale
+        z = z / self.vae_scale
         z = rearrange(z, 'b m n (c p q) -> b c (m p) (n q)',
                       p=self.mar.patch_size, q=self.mar.patch_size)
 
@@ -188,7 +189,9 @@ class Harmon(nn.Module):
     def sample(self,
                input_ids=None, inputs_embeds=None,
                attention_mask=None, num_iter=64, cfg=1.0, cfg_schedule="constant", temperature=1.0,
-               progress=False, mask=None, past_key_values=None, image_shape=None, x_con=None, **kwargs):
+               progress=False, mask=None, past_key_values=None, image_shape=None, x_con=None,
+               force_tokens=None, force_mask=None, # [NEW] Added arguments for Hard Forcing
+               **kwargs):
         if inputs_embeds is None and input_ids is not None:
             inputs_embeds = self.llm.get_input_embeddings()(input_ids)
 
@@ -205,12 +208,33 @@ class Harmon(nn.Module):
             mask = torch.ones(bsz, m*n, device=self.device, dtype=self.dtype)
         else:
             mask = mask.view(bsz, m*n)
+        
         tokens = torch.zeros(bsz, m*n, self.token_embed_dim,
                              device=self.device, dtype=self.dtype)
-        orders = self.mar.sample_orders(bsz, seq_len=m*n)
-        if cfg != 1.0:
-            orders[bsz//2:] = orders[:bsz//2]
 
+        # [NEW] Initial Injection: Loop 진입 전, 강제 토큰 주입 및 마스크 0(보임) 처리
+        # [NEW] Initial Injection: Loop 진입 전, 강제 토큰 주입 및 마스크 0(보임) 처리
+        flat_force_mask = None
+        if force_tokens is not None and force_mask is not None:
+            # Mask는 (Batch, Sequence_Length) 형태로 폅니다.
+            flat_force_mask = force_mask.view(bsz, m*n).bool()
+            
+            # [핵심 수정] Force Tokens는 (Batch, Height, Width, Channel) -> (Batch, Sequence_Length, Channel)
+            # -1을 사용하여 마지막 Channel(임베딩 차원)을 유지합니다.
+            flat_force_tokens = force_tokens.reshape(bsz, m*n, -1) 
+            
+            # 1. 토큰 값 강제 주입
+            # tokens[mask]는 (N_selected, Channel) 형태를 기대하므로 차원이 딱 맞습니다.
+            tokens[flat_force_mask] = flat_force_tokens[flat_force_mask]
+            
+            # 2. 마스크를 0(Visible/Hint)으로 변경 -> 모델이 정답으로 인식
+            mask[flat_force_mask] = 0.0
+
+        # orders = self.mar.sample_orders(bsz, seq_len=m*n)
+        # if cfg != 1.0:
+            # orders[bsz//2:] = orders[:bsz//2]
+        orders = self.mar.sample_orders(1, seq_len=m*n)
+        orders = orders.repeat(bsz, 1)
         indices = list(range(num_iter))
         if progress:
             indices = tqdm(indices)
@@ -233,9 +257,8 @@ class Harmon(nn.Module):
                                              past_key_values=past_key_values,
                                              # inputs_embeds=inputs_embeds,
                                              attention_mask=attention_mask)
-            # import pdb; pdb.set_trace()
+            
             self.curtail_cache(past_key_values, inputs_embeds.shape[1])
-            # import pdb; pdb.set_trace()
 
             z = self.mar.forward_mae_decoder(x_enc, mask.to(self.dtype), image_shape=(m, n), x_con=x_con)
 
@@ -251,29 +274,34 @@ class Harmon(nn.Module):
             mask_next = mask_by_order(mask_len[0], orders, bsz, m*n).to(self.device)
             if cfg != 1.0:
                 mask_next[bsz//2:] = mask_next[:bsz//2]
+            
             if step >= num_iter - 1:
                 mask_to_pred = mask[:bsz].bool()
             else:
                 mask_to_pred = torch.logical_xor(mask[:bsz].bool(), mask_next.bool())
+            
             mask = mask_next
-            # if not cfg == 1.0:
-            #     mask_to_pred = torch.cat([mask_to_pred, mask_to_pred], dim=0)
+            
+            if flat_force_mask is not None:
+                mask[flat_force_mask] = 0.0
+                flat_force_tokens = force_tokens.reshape(bsz, m*n, -1) 
+                tokens[flat_force_mask] = flat_force_tokens[flat_force_mask]
+                
+                mask_to_pred[flat_force_mask[:bsz]] = False
 
             # sample token latents for this step
             z = z[mask_to_pred.nonzero(as_tuple=True)]
-            # cfg schedule follow Muse
-            if cfg_schedule == "linear":
-                cfg_iter = 1 + (cfg - 1) * (m*n - mask_len[0]) / (m*n)
-            elif cfg_schedule == "constant":
-                cfg_iter = cfg
-            else:
-                raise NotImplementedError
-            sampled_token_latent = self.mar.diffloss.sample(z, temperature, cfg_iter).to(self.dtype)
-            # if not cfg == 1.0:
-            #     sampled_token_latent, _ = sampled_token_latent.chunk(2, dim=0)  # Remove null class samples
-            #     mask_to_pred, _ = mask_to_pred.chunk(2, dim=0)
-
-            cur_tokens[mask_to_pred.nonzero(as_tuple=True)] = sampled_token_latent
+            if z.shape[0] > 0:
+                # cfg schedule follow Muse
+                if cfg_schedule == "linear":
+                    cfg_iter = 1 + (cfg - 1) * (m*n - mask_len[0]) / (m*n)
+                elif cfg_schedule == "constant":
+                    cfg_iter = cfg
+                else:
+                    raise NotImplementedError
+                sampled_token_latent = self.mar.diffloss.sample(z, temperature, cfg_iter).to(self.dtype)
+                cur_tokens[mask_to_pred.nonzero(as_tuple=True)] = sampled_token_latent
+            
             if cfg != 1.0:
                 cur_tokens[bsz//2:] = cur_tokens[:bsz//2]
             tokens = cur_tokens.clone()
@@ -282,4 +310,7 @@ class Harmon(nn.Module):
 
         if cfg != 1.0:
             pred = pred[:bsz//2]
-        return pred
+            final_tokens = tokens[:bsz//2]
+        else:
+            final_tokens = tokens
+        return pred, final_tokens.view(pred.shape[0], m, n, -1)
