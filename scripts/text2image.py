@@ -53,7 +53,9 @@ if __name__ == "__main__":
         input_ids = input_ids.expand(bsz, -1)
         attention_mask = attention_mask.expand(bsz, -1)
 
-    m = n = args.image_size // 16
+    # m = n = args.image_size // 16
+    m = args.image_size // 16
+    n = args.image_size * 2 // 16
 
     samples = model.sample(input_ids=input_ids, attention_mask=attention_mask,
                            num_iter=args.num_iter, cfg=args.cfg, cfg_schedule=args.cfg_schedule,

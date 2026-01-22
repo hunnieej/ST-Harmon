@@ -199,6 +199,8 @@ def make_global_perm_from_score_masked(
     return perm
 
 
+#---- Visualization functions ----
+
 def _make_figsize(m: int, n: int, base_h: float = 6.0):
     """
     Make figure size so that:
@@ -262,7 +264,7 @@ def save_rank_map(global_perm: torch.Tensor, m: int, n: int, out_png: Path, base
 
     rank2d = rank2d / (L - 1 + 1e-8)
     arr = rank2d.numpy()
-
+    rank2d = 1.0 - rank2d
     out_png.parent.mkdir(parents=True, exist_ok=True)
 
     plt.figure(figsize=_make_figsize(m, n, base_h=base_h))
